@@ -2,14 +2,17 @@ import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.*;
@@ -17,7 +20,6 @@ import java.util.*;
 public class Repairer {
     private ArrayList<String> arrayLineData;
     private Map<String, String> mapReplacement;
-    private ArrayList<String> outArrayLineData = new ArrayList<String>();
     private String urlData;
     private String replacementFileName;
     private String resultFileName;
@@ -42,34 +44,37 @@ public class Repairer {
     }
 
     public void applyChanges() {
-        for (Object line : arrayLineData) {
-            boolean der = true;
-            String result = line.toString();
-            for (String replace : mapReplacement.keySet()) {
-                if (!result.contains(replace)) {
+        for (int index = 0; index < arrayLineData.size(); index++) {
+            fixLine(index);
+        }
+        clearEmptyLine();
+    }
+
+    public void fixLine(int index) {
+        for (String replace : mapReplacement.keySet()) {
+            if (arrayLineData.get(index).indexOf(replace) >= 0) {
+                if (mapReplacement.get(replace) == null) {
+                    arrayLineData.set(index, arrayLineData.get(index).replace(replace, ""));
                     continue;
                 }
-                if ((String) mapReplacement.get(replace) == null) {
-                    result = result.replace(replace, "");
-                    if (result == "") {
-                        der = false;
-                    }
-                    continue;
-                }
-                result = result.replace(replace, (String) mapReplacement.get(replace));
+                arrayLineData.set(index, arrayLineData.get(index).replace(replace, mapReplacement.get(replace)));
             }
-            if (der) {
-                outArrayLineData.add(result);
+        }
+    }
+
+    public void clearEmptyLine() {
+        for (int index = arrayLineData.size() - 1; index >= 0; index--) {
+            if (arrayLineData.get(index) == ""){
+                arrayLineData.remove(index);
             }
         }
     }
 
     public void writeResultIntoFile() {
         JSONArray outJsonArray = new JSONArray();
-        for (String sdf : outArrayLineData) {
+        for (String sdf : arrayLineData) {
             outJsonArray.add(sdf);
         }
-
         try {
             Files.write(Paths.get(resultFileName), outJsonArray.toJSONString().getBytes());
         } catch (IOException e) {
@@ -78,22 +83,15 @@ public class Repairer {
     }
 
     public void initArrayLineData() {
-        try {
-            JSONArray toData = (JSONArray) parser.parse(getJsonUrl(new URL(urlData)));
-            toData.forEach(dataObject -> {
-                arrayLineData.add((String) dataObject);
-            });
-        } catch (MalformedURLException e) {
-            System.out.println("Нет доступа к указанному URL");
-        } catch (ParseException e) {
-            System.out.println("Не удалось пропарсить файл");
-        }
+        getJsonArrayByUrl(urlData).forEach(dataObject -> {
+            arrayLineData.add((String) dataObject);
+        });
+
     }
 
     public void initMapReplacement() {
         try {
             JSONArray replacement = (JSONArray) parser.parse(getJsonFile(replacementFileName));
-
             replacement.forEach(replacementObject -> {
                 JSONObject replacementJsonObject = (JSONObject) replacementObject;
                 mapReplacement.put((String) replacementJsonObject.get("replacement"),
@@ -107,27 +105,32 @@ public class Repairer {
     private static String getJsonFile(String nameJsonFile) {
         StringBuilder builder = new StringBuilder();
         try {
-            List<String> lines = Files.readAllLines(Paths.get(nameJsonFile));
-            lines.forEach(line -> builder.append(line));
-        } catch (IOException e){
+            Files.readAllLines(Paths.get(nameJsonFile)).forEach(builder::append);
+        } catch (IOException e) {
             System.out.println("Не удалось прочитать файл");
         }
         return builder.toString();
     }
 
-    private static String getJsonUrl(URL oracle) {
-        String sun = "";
-        BufferedReader in = null;
+    private static JSONArray getJsonArrayByUrl(String url) {
         try {
-            in = new BufferedReader(new InputStreamReader(oracle.openStream()));
-            String inputLine;
-            while ((inputLine = in.readLine()) != null)
-                sun += inputLine;
-            in.close();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(new URI(url))
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .GET()
+                    .build();
+            HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+            return (JSONArray) parser.parse(response.body());
+        } catch (ParseException e) {
+            System.out.println("Не удалось пропарсить файл");
+        } catch (URISyntaxException e) {
+            System.out.println("Неправильный адрес url страницы");
         } catch (IOException e) {
-            System.out.println("Не удалось прочитать файл");
+            System.out.println("Не удалось прочитать url страницу");
+        } catch (InterruptedException e) {
+            System.out.println("Не удалось отправить url страницу");
         }
-        return sun;
+        return null;
     }
 
     public String getUrlData() {
